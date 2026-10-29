@@ -3,7 +3,11 @@ import logging
 import math
 import sys
 
+from scapy.packet import Packet # type: ignore
+
 from .capture import capture_packets, get_interfaces
+from .models import PacketRecord
+from .packet_parser import parse_packet # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +79,52 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def format_record(
+    packet_number: int,
+    record: PacketRecord,
+) -> str:
+    """Format one structured packet record for terminal output."""
+    if record.timestamp is None:
+        timestamp = "unknown-time"
+    else:
+        timestamp = record.timestamp.isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
+
+    source = record.source_ip or record.source_mac or "-"
+    destination = record.destination_ip or record.destination_mac or "-"
+
+    if (
+        record.source_port is not None
+        and record.destination_port is not None
+    ):
+        ports = f"{record.source_port}->{record.destination_port}"
+    else:
+        ports = "-"
+
+    return (
+        f"{packet_number:04d} | {timestamp} | {record.protocol} | "
+        f"{source} -> {destination} | "
+        f"ports={ports} | bytes={record.observed_bytes}"
+    )
+
+
+def display_packet(packet: Packet, packet_number: int) -> None:
+    """Parse a captured packet and print its metadata."""
+    try:
+        record = parse_packet(packet)
+    except Exception as exc:
+        logger.warning(
+            "Could not parse packet %d: %s: %s",
+            packet_number,
+            type(exc).__name__,
+            exc,
+        )
+        return
+
+    print(format_record(packet_number, record), flush=True)
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -96,6 +146,7 @@ def main() -> int:
             return 2
 
         print("Available Scapy interfaces:")
+
         for name, description in interfaces:
             if description:
                 print(f"  {name} — {description}")
@@ -105,7 +156,9 @@ def main() -> int:
         return 0
 
     if not args.interface:
-        parser.error("Specify --interface or use --list-interfaces.")
+        parser.error(
+            "Specify --interface or use --list-interfaces."
+        )
 
     interface_names = {name for name, _ in interfaces}
 
@@ -128,9 +181,15 @@ def main() -> int:
     logger.info("Capture will stop %s.", stop_condition)
     logger.info("Payloads will not be written to disk.")
 
+    print(
+        "PACKET | TIMESTAMP (UTC) | PROTOCOL | "
+        "SOURCE -> DESTINATION | PORTS | OBSERVED BYTES"
+    )
+
     try:
         captured = capture_packets(
             interface=args.interface,
+            on_packet=display_packet,
             count=args.count,
             duration=args.duration,
         )
@@ -141,7 +200,11 @@ def main() -> int:
         )
         return 2
 
-    logger.info("Capture finished. Packets processed: %d", captured)
+    logger.info(
+        "Capture finished. Packets processed: %d",
+        captured,
+    )
+
     return 0
 
 
