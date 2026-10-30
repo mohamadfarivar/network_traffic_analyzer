@@ -8,7 +8,7 @@ from scapy.packet import Packet # type: ignore
 from .capture import capture_packets, get_interfaces
 from .models import PacketRecord
 from .packet_parser import parse_packet # type: ignore
-
+from .statistics import TrafficStatistics
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,117 @@ def format_record(
     )
 
 
+def make_packet_handler(statistics: TrafficStatistics):
+    """Create a callback that parses, analyzes, and displays packets."""
+
+    def handle_packet(packet: Packet, packet_number: int) -> None:
+        try:
+            record = parse_packet(packet)
+            statistics.add(record)
+
+        except Exception as exc:
+            logger.warning(
+                "Could not process packet %d: %s: %s",
+                packet_number,
+                type(exc).__name__,
+                exc,
+            )
+            return
+
+        print(
+            format_record(packet_number, record),
+            flush=True,
+        )
+
+    return handle_packet
+
+
+def print_statistics(statistics: TrafficStatistics) -> None:
+    """Print the final traffic statistics report."""
+
+    print("\n")
+    print("=" * 65)
+    print("TRAFFIC STATISTICS REPORT")
+    print("=" * 65)
+
+    print(f"Analyzed packets:       {statistics.total_packets}")
+    print(
+        f"Total observed bytes:   {statistics.total_observed_bytes}"
+    )
+
+    print(
+        "Packets without usable timestamps: "
+        f"{statistics.packets_without_usable_timestamp}"
+    )
+
+    # Protocol breakdown
+    print("\n[Protocol Statistics]")
+
+    protocols = statistics.protocol_summary()
+
+    if not protocols:
+        print("No packet records available.")
+
+    for protocol, values in protocols.items():
+        print(
+            f"{protocol:<15} "
+            f"Packets: {values['packets']:<8} "
+            f"Bytes: {values['observed_bytes']}"
+        )
+
+    # Source IP addresses
+    print("\n[Top Source IP Addresses]")
+
+    for address, count in statistics.top_source_ips():
+        print(f"{address:<40} {count} packets")
+
+    # Destination IP addresses
+    print("\n[Top Destination IP Addresses]")
+
+    for address, count in statistics.top_destination_ips():
+        print(f"{address:<40} {count} packets")
+
+    # TCP and UDP ports
+    for protocol in ("TCP", "UDP"):
+        print(f"\n[Top {protocol} Destination Ports]")
+
+        ports = statistics.top_ports(
+            protocol,
+            direction="destination",
+        )
+
+        for port, count in ports:
+            print(f"Port {port:<10} {count} packets")
+
+    # Directional endpoint pairs
+    print("\n[Top Source -> Destination Pairs]")
+
+    for source, destination, packets, byte_count in (
+        statistics.top_endpoint_pairs()
+    ):
+        print(
+            f"{source} -> {destination} | "
+            f"Packets: {packets} | Bytes: {byte_count}"
+        )
+
+    # Traffic rates
+    print("\n[Traffic Rates - Latest 10 Buckets]")
+
+    rates = statistics.time_series()
+
+    if not rates:
+        print("No usable timestamps available.")
+    else:
+        for rate in rates[-10:]:
+            print(
+                f"{rate.interval_start.isoformat()} | "
+                f"{rate.packets_per_second:.2f} packets/s | "
+                f"{rate.bytes_per_second:.2f} bytes/s"
+            )
+
+    print("=" * 65)
+
+
 def display_packet(packet: Packet, packet_number: int) -> None:
     """Parse a captured packet and print its metadata."""
     try:
@@ -186,13 +297,21 @@ def main() -> int:
         "SOURCE -> DESTINATION | PORTS | OBSERVED BYTES"
     )
 
+    statistics = TrafficStatistics(
+        interval_seconds=1.0,
+        max_time_buckets=3600,
+    )
+
+    packet_handler = make_packet_handler(statistics)
+
     try:
         captured = capture_packets(
             interface=args.interface,
-            on_packet=display_packet,
+            on_packet=packet_handler,
             count=args.count,
             duration=args.duration,
         )
+
     except (RuntimeError, ValueError) as exc:
         logger.error("%s", exc)
         logger.error(
@@ -201,9 +320,16 @@ def main() -> int:
         return 2
 
     logger.info(
-        "Capture finished. Packets processed: %d",
+        "Capture callback invocations: %d",
         captured,
     )
+
+    logger.info(
+        "Successfully analyzed records: %d",
+        statistics.total_packets,
+    )
+
+    print_statistics(statistics)
 
     return 0
 
