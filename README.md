@@ -80,13 +80,7 @@ Network Adapter
 
 Install Npcap from: https://npcap.com/
 
-Clone the repository:
-
-```powershell
-git clone https://github.com/YOUR_USERNAME/network-traffic-analyzer.git
-
-cd network-traffic-analyzer
-```
+Clone the repository 
 
 Create and activate a virtual environment:
 
